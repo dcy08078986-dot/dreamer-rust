@@ -1,0 +1,13 @@
+[package]
+name = "dreamer-rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+burn = { version = "0.18", features = ["wgpu", "train"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+rand = "0.8"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+image = "0.25"
