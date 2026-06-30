@@ -64,9 +64,14 @@ impl<B: Backend> ReplayBuffer<B> {
         let mut rew_batch: Vec<Tensor<B, 3>> = Vec::new();
         let mut done_batch: Vec<Tensor<B, 3>> = Vec::new();
 
-        for _ in 0..batch_size {
-            let ep = &self.episodes[rng.gen_range(0..self.episodes.len())];
+        // Filter to episodes long enough
+        let valid_eps: Vec<_> = self.episodes.iter()
+            .filter(|ep| ep.obs.len() > seq_len)
+            .collect();
+        if valid_eps.is_empty() { return Batch { obs: Tensor::zeros([1, 1, 1], _device), action: Tensor::zeros([1, 1, 1], _device), reward: Tensor::zeros([1, 1, 1], _device), done: Tensor::zeros([1, 1, 1], _device) }; }
 
+        for _ in 0..batch_size {
+            let ep = valid_eps[rng.gen_range(0..valid_eps.len())];
             let start = rng.gen_range(0..(ep.obs.len() - seq_len));
 
             let obs_slice = &ep.obs[start..start + seq_len];

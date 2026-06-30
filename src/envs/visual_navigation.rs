@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables)]
 use crate::envs::Environment;
 use burn::tensor::{backend::Backend, Tensor};
 use rand::Rng;

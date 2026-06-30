@@ -1,6 +1,9 @@
 use burn::tensor::{backend::Backend, Tensor};
 
 pub mod visual_navigation;
+pub mod pendulum;
+pub mod maze;
+pub mod bouncing_ball;
 
 pub trait Environment {
     fn reset<B: Backend>(&mut self, device: &B::Device) -> Tensor<B, 3>;

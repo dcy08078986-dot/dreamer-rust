@@ -178,9 +178,12 @@ impl<B: Backend> RSSM<B> {
         &self,
         state: &RSSMState<B>,
         obs: Tensor<B, 2>,
+        action: Tensor<B, 2>,
     ) -> RSSMState<B> {
-        let deter = state.deter.clone();
+        // 先通过GRU更新h_t (这是修复的关键)
+        let deter = self.gru_step(state, action);
 
+        // 用新的h_t计算后验
         let (mean, std) = self.post(deter.clone(), obs);
         let stoch = self.sample(mean.clone(), std.clone());
 

@@ -47,17 +47,17 @@ impl<B: Backend> Actor<B> {
         let eps = Tensor::random(mean.shape(), Normal(0.0, 1.0), &mean.device());
         let raw_action = mean.clone() + eps * std.clone();
 
-        let var = std.clone().powf_scalar(2.0);
+        let var = std.clone().mul(std.clone());
         let diff = raw_action.clone() - mean;
 
-        let term1 = diff.powf_scalar(2.0) / var.add_scalar(1e-8);
+        let term1 = diff.clone().mul(diff.clone()) / var.add_scalar(1e-8);
         let term2 = std.mul_scalar(2.0).log();
         let sum = (term1 + term2).add_scalar(1.837877f64);
 
         let mut log_prob = sum.sum_dim(1).mul_scalar(-0.5).squeeze(1);
 
         let action = raw_action.tanh();
-        let tanh_grad = action.clone().powf_scalar(2.0).neg().add_scalar(1.0);
+        let tanh_grad = action.clone().mul(action.clone()).neg().add_scalar(1.0);
         log_prob = log_prob - tanh_grad.clamp_min(1e-8).log().sum_dim(1).squeeze(1);
 
         (action, log_prob)
@@ -170,16 +170,16 @@ pub fn actor_critic_loss<B: Backend>(
         let std = log_std.exp().add_scalar(1e-4);
 
         // Compute log_prob of the stored action under current policy
-        let var = std.clone().powf_scalar(2.0);
+        let var = std.clone().mul(std.clone());
         let diff = action.clone() - mean;
-        let term1 = diff.powf_scalar(2.0) / var.add_scalar(1e-8);
+        let term1 = diff.clone().mul(diff.clone()) / var.add_scalar(1e-8);
         let term2 = std.mul_scalar(2.0).log();
         let sum = (term1 + term2).add_scalar(1.837877f64);
         let mut log_prob: Tensor<B, 1> = sum.sum_dim(1).mul_scalar(-0.5).squeeze(1); // [B]
 
         // tanh correction for bounded actions
         let action_tanh = action.tanh();
-        let tanh_grad = action_tanh.powf_scalar(2.0).neg().add_scalar(1.0);
+        let tanh_grad = action_tanh.clone().mul(action_tanh.clone()).neg().add_scalar(1.0);
         log_prob = log_prob - tanh_grad.clamp_min(1e-8).log().sum_dim(1).squeeze(1); // [B]
 
         let logp = log_prob.unsqueeze_dim::<2>(1); // [B, 1]
@@ -190,7 +190,7 @@ pub fn actor_critic_loss<B: Backend>(
     actor_loss = actor_loss.div_scalar(horizon as f64);
 
     // Critic loss: MSE between returns and values
-    let value_loss = (returns - values_tensor).powf_scalar(2.0).mean().reshape([1]);
+    let value_loss = { let d = returns - values_tensor; d.clone().mul(d) }.mean().reshape([1]);
 
     (actor_loss, value_loss)
 }

@@ -46,9 +46,9 @@ impl<B: Backend> WorldModel<B> {
         self.encoder.forward(obs_4d)
     }
 
-    pub fn obs_step(&self, state: &RSSMState<B>, obs: Tensor<B, 2>) -> RSSMState<B> {
+    pub fn obs_step(&self, state: &RSSMState<B>, obs: Tensor<B, 2>, action: Tensor<B, 2>) -> RSSMState<B> {
         let emb = self.encode(obs);
-        self.rssm.obs_step(state, emb)
+        self.rssm.obs_step(state, emb, action)
     }
 
     pub fn img_step(&self, state: &RSSMState<B>, action: Tensor<B, 2>) -> RSSMState<B> {
@@ -73,6 +73,11 @@ impl<B: Backend> WorldModel<B> {
         batch_obs: Tensor<B, 3>,
         batch_action: Tensor<B, 3>,
         batch_reward: Tensor<B, 2>,
+        kl_low_threshold: f32,
+        kl_high_threshold: f32,
+        kl_weight_low: f32,
+        kl_weight_high: f32,
+        kl_scale_default: f32,
     ) -> Tensor<B, 1> {
         let [batch, seq_len] = [batch_obs.dims()[0], batch_obs.dims()[1]];
         let device = &batch_obs.device();
@@ -81,8 +86,7 @@ impl<B: Backend> WorldModel<B> {
 
         let seq_len_tensor = Tensor::full([1], seq_len as f32, device);
         let _one_tensor: Tensor<B, 1> = Tensor::full([1], 1.0_f32, device);
-        let half_tensor = Tensor::full([1], 0.5_f32, device);
-        let eight_tensor = Tensor::full([1], 0.8_f32, device);
+        let half_tensor: Tensor<B, 1> = Tensor::full([1], 0.5_f32, device);
         let free_nats = Tensor::full([1, 1], 1.0_f32, device);
         let _zero_tensor: Tensor<B, 1> = Tensor::full([1], 0.0_f32, device);
 
@@ -95,10 +99,10 @@ impl<B: Backend> WorldModel<B> {
             let act_t = batch_action.clone().narrow(1, t, 1).squeeze(1);
             let rew_t = batch_reward.clone().narrow(1, t, 1).squeeze(1);
 
-            let prior_state = self.rssm.img_step(&state, act_t);
+            let prior_state = self.rssm.img_step(&state, act_t.clone());
 
             let obs_emb = self.encode(obs_t);
-            let post_state = self.rssm.obs_step(&prior_state, obs_emb);
+            let post_state = self.rssm.obs_step(&prior_state, obs_emb, act_t);
 
             let recon = self.reconstruct(&post_state);
             let target = batch_obs.clone().narrow(1, t, 1).squeeze(1);
@@ -131,9 +135,22 @@ impl<B: Backend> WorldModel<B> {
         let total_reward_loss = reward_loss.div(seq_len_tensor.clone());
         let total_kl_loss = kl_loss.div(seq_len_tensor);
 
+        // 自适应KL权重调整
+        let kl_value = total_kl_loss.clone().mean().to_data();
+        let kl_val = kl_value.as_slice::<f32>().unwrap()[0];
+        let kl_weight = if kl_val < kl_low_threshold {
+            kl_weight_low  // KL太小，增加权重鼓励探索
+        } else if kl_val > kl_high_threshold {
+            kl_weight_high  // KL太大，降低权重防止后验崩塌
+        } else {
+            kl_scale_default  // 正常范围使用默认权重
+        };
+
+        let kl_weight_tensor = Tensor::full([1], kl_weight, &total_kl_loss.device());
+
         total_obs_loss
             .add(total_reward_loss.mul(half_tensor))
-            .add(total_kl_loss.mul(eight_tensor))
+            .add(total_kl_loss.mul(kl_weight_tensor))
     }
 }
 
@@ -143,8 +160,8 @@ fn analytic_kl<B: Backend>(
     mean2: Tensor<B, 2>,
     std2: Tensor<B, 2>,
 ) -> Tensor<B, 2> {
-    let var1 = std1.clone().powf_scalar(2.0);
-    let var2 = std2.clone().powf_scalar(2.0);
+    let var1 = std1.clone().mul(std1.clone());
+    let var2 = std2.clone().mul(std2.clone());
 
     let log_var1 = std1.log().mul_scalar(2.0);
     let log_var2 = std2.log().mul_scalar(2.0);
