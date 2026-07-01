@@ -1,0 +1,162 @@
+warning: variable does not need to be mutable
+  --> src/envs/maze.rs:42:17
+   |
+42 |             let mut neighbors: Vec<_> = dirs.iter().filter_map(|&(dx, dy, _)| {
+   |                 ----^^^^^^^^^
+   |                 |
+   |                 help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `AttentionEncoder` is never constructed
+ --> src/networks/attention.rs:8:12
+  |
+8 | pub struct AttentionEncoder<B: Backend> {
+  |            ^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `init` and `forward` are never used
+  --> src/networks/attention.rs:20:12
+   |
+19 | impl<B: Backend> AttentionEncoder<B> {
+   | ------------------------------------ associated items in this implementation
+20 |     pub fn init(
+   |            ^^^^
+...
+41 |     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 2> {
+   |            ^^^^^^^
+
+warning: struct `DiscreteActor` is never constructed
+ --> src/agent/discrete_actor.rs:8:12
+  |
+8 | pub struct DiscreteActor<B: Backend> {
+  |            ^^^^^^^^^^^^^
+
+warning: associated items `init`, `forward`, and `sample` are never used
+  --> src/agent/discrete_actor.rs:15:12
+   |
+14 | impl<B: Backend> DiscreteActor<B> {
+   | --------------------------------- associated items in this implementation
+15 |     pub fn init(
+   |            ^^^^
+...
+28 |     pub fn forward(&self, state: &RSSMState<B>) -> (Tensor<B, 2>, Tensor<B, 2>) {
+   |            ^^^^^^^
+...
+37 |     pub fn sample(&self, state: &RSSMState<B>) -> (Tensor<B, 1, Int>, Tensor<B, 1>) {
+   |            ^^^^^^
+
+warning: function `make_comparison_frame` is never used
+  --> src/video.rs:34:8
+   |
+34 | pub fn make_comparison_frame<B: Backend>(
+   |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `dreamer-rust` (bin "dreamer-rust") generated 6 warnings (run `cargo fix --bin "dreamer-rust" -p dreamer-rust` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.28s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running `target/release/dreamer-rust`
+Creating 4 parallel BouncingBall environments...
+=== Dreamer Discrete + CarRacing (4 envs, 125 rounds) ===
+Obs: 3x64x64 | Action: 1 | Embed: 256 | Classes: 32
+ep    0 | steps  28 | reward +135.5727
+ffmpeg version 8.1.1 Copyright (c) 2000-2026 the FFmpeg developers
+  built with Apple clang version 21.0.0 (clang-2100.0.123.102)
+  configuration: --prefix=/opt/homebrew/Cellar/ffmpeg/8.1.1 --enable-shared --enable-pthreads --enable-version3 --cc=clang --host-cflags= --host-ldflags= --enable-ffplay --enable-gpl --enable-libsvtav1 --enable-libopus --enable-libx264 --enable-libmp3lame --enable-libdav1d --enable-libvmaf --enable-libvpx --enable-libx265 --enable-openssl --enable-videotoolbox --enable-audiotoolbox --enable-neon
+  libavutil      60. 26.101 / 60. 26.101
+  libavcodec     62. 28.101 / 62. 28.101
+  libavformat    62. 12.101 / 62. 12.101
+  libavdevice    62.  3.101 / 62.  3.101
+  libavfilter    11. 14.101 / 11. 14.101
+  libswscale      9.  5.101 /  9.  5.101
+  libswresample   6.  3.101 /  6.  3.101
+Input #0, image2, from 'frames/ep_0003/frame_%04d.png':
+  Duration: 00:00:15.00, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: png, rgb24(pc, gbr/unknown/unknown), 64x64, 20 fps, 20 tbr, 20 tbn
+Stream mapping:
+  Stream #0:0 -> #0:0 (png (native) -> h264 (libx264))
+Press [q] to stop, [?] for help
+[libx264 @ 0xa6f028a80] using cpu capabilities: ARMv8 NEON DotProd I8MM
+[libx264 @ 0xa6f028a80] profile High, level 1.0, 4:2:0, 8-bit
+[libx264 @ 0xa6f028a80] 264 - core 165 r3222 b35605a - H.264/MPEG-4 AVC codec - Copyleft 2003-2025 - http://www.videolan.org/x264.html - options: cabac=1 ref=3 deblock=1:0:0 analyse=0x3:0x113 me=hex subme=7 psy=1 psy_rd=1.00:0.00 mixed_ref=1 me_range=16 chroma_me=1 trellis=1 8x8dct=1 cqm=0 deadzone=21,11 fast_pskip=1 chroma_qp_offset=-2 threads=2 lookahead_threads=1 sliced_threads=0 nr=0 decimate=1 interlaced=0 bluray_compat=0 constrained_intra=0 bframes=3 b_pyramid=2 b_adapt=1 b_bias=0 direct=1 weightb=1 open_gop=0 weightp=2 keyint=250 keyint_min=20 scenecut=40 intra_refresh=0 rc_lookahead=40 rc=crf mbtree=1 crf=23.0 qcomp=0.60 qpmin=0 qpmax=69 qpstep=4 ip_ratio=1.40 aq=1:1.00
+Output #0, mp4, to 'output/comparison_ep_0003.mp4':
+  Metadata:
+    encoder         : Lavf62.12.101
+  Stream #0:0: Video: h264 (avc1 / 0x31637661), yuv420p(tv, progressive), 64x64, q=2-31, 20 fps, 10240 tbn
+    Metadata:
+      encoder         : Lavc62.28.101 libx264
+    Side data:
+      CPB properties: bitrate max/min/avg: 0/0/0 buffer size: 0 vbv_delay: N/A
+[out#0/mp4 @ 0xa6f02c240] video:5KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: 81.716074%
+frame=  300 fps=0.0 q=-1.0 Lsize=      10KiB time=00:00:14.90 bitrate=   5.3kbits/s speed= 580x elapsed=0:00:00.02    
+[libx264 @ 0xa6f028a80] frame I:4     Avg QP:14.02  size:    69
+[libx264 @ 0xa6f028a80] frame P:80    Avg QP:14.38  size:    22
+[libx264 @ 0xa6f028a80] frame B:216   Avg QP:19.55  size:    13
+[libx264 @ 0xa6f028a80] consecutive B-frames:  2.3%  4.0%  3.0% 90.7%
+[libx264 @ 0xa6f028a80] mb I  I16..4: 48.4% 51.6%  0.0%
+[libx264 @ 0xa6f028a80] mb P  I16..4:  0.2%  0.2%  0.0%  P16..4:  4.5%  0.0%  0.3%  0.0%  0.0%    skip:94.8%
+[libx264 @ 0xa6f028a80] mb B  I16..4:  0.1%  0.0%  0.0%  B16..8:  0.8%  0.0%  0.0%  direct: 0.0%  skip:99.2%  L0:19.2% L1:80.8% BI: 0.0%
+[libx264 @ 0xa6f028a80] 8x8 transform intra:50.0% inter:100.0%
+[libx264 @ 0xa6f028a80] coded y,uvDC,uvAC intra: 56.9% 16.7% 1.4% inter: 0.3% 0.6% 0.0%
+[libx264 @ 0xa6f028a80] i16 v,h,dc,p: 86%  0% 14%  0%
+[libx264 @ 0xa6f028a80] i8 v,h,dc,ddl,ddr,vr,hd,vl,hu:  0%  0% 100%  0%  0%  0%  0%  0%  0%
+[libx264 @ 0xa6f028a80] i8c dc,h,v,p: 96%  0%  4%  0%
+[libx264 @ 0xa6f028a80] Weighted P-Frames: Y:0.0% UV:0.0%
+[libx264 @ 0xa6f028a80] ref P L0: 93.0%  0.0%  2.0%  4.9%
+[libx264 @ 0xa6f028a80] ref B L0: 80.0% 20.0%
+[libx264 @ 0xa6f028a80] ref B L1: 85.7% 14.3%
+[libx264 @ 0xa6f028a80] kb/s:2.53
+Video saved to: output/comparison_ep_0003.mp4
+round    0 | ep    3 | avg_reward +119.5365 | model 0.0000 | actor 0.0000 | critic 0.0000
+
+thread 'main' (4461167) panicked at /Users/dong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-25.0.2/src/backend/wgpu_core.rs:1266:26:
+wgpu error: Validation Error
+
+Caused by:
+  In Device::create_pipeline_layout
+    Not enough memory left.
+
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (4461167) panicked at /Users/dong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/burn-fusion-0.18.0/src/stream/execution/ordering.rs:51:13:
+Ordering is bigger than operations
+stack backtrace:
+   0:        0x10530f230 - <<std[7d7552da0923e8b2]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[4b39a0a778b8475a]::fmt::Display>::fmt
+   1:        0x105322110 - core[4b39a0a778b8475a]::fmt::write
+   2:        0x105313648 - <std[7d7552da0923e8b2]::sys::stdio::unix::Stderr as std[7d7552da0923e8b2]::io::Write>::write_fmt
+   3:        0x1052f6bf4 - std[7d7552da0923e8b2]::panicking::default_hook::{closure#0}
+   4:        0x105308ca0 - std[7d7552da0923e8b2]::panicking::default_hook
+   5:        0x105308fc8 - std[7d7552da0923e8b2]::panicking::panic_with_hook
+   6:        0x1052f6ccc - std[7d7552da0923e8b2]::panicking::panic_handler::{closure#0}
+   7:        0x1052ec38c - std[7d7552da0923e8b2]::sys::backtrace::__rust_end_short_backtrace::<std[7d7552da0923e8b2]::panicking::panic_handler::{closure#0}, !>
+   8:        0x1052f7370 - __rustc[8068f81614cfe5c]::rust_begin_unwind
+   9:        0x105390958 - core[4b39a0a778b8475a]::panicking::panic_fmt
+  10:        0x1049a2c6c - burn_fusion::stream::execution::ordering::OrderedExecution<R>::execute_optimization::he5df926a75e49e4d
+  11:        0x104b55a28 - burn_fusion::stream::queue::execution::QueueExecution<R>::execute_strategy::h11566bb35f47a55a
+  12:        0x104b55a64 - burn_fusion::stream::queue::execution::QueueExecution<R>::execute_strategy::h11566bb35f47a55a
+  13:        0x104b55ba4 - burn_fusion::stream::queue::execution::QueueExecution<R>::run::hbc51b4781d0d71f5
+  14:        0x104a40160 - <burn_fusion::stream::multi::Segment<R> as burn_fusion::stream::execution::processor::StreamSegment<<R as burn_fusion::backend::FusionRuntime>::Optimization>>::execute::hd37781d822fae557
+  15:        0x104a256bc - burn_fusion::stream::execution::processor::Processor<O>::process::h3c3cb4105bf09cca
+  16:        0x104a24694 - burn_fusion::stream::multi::MultiStream<R>::register::h79d602fae73bdc0b
+  17:        0x104a60c5c - <burn_fusion::tensor::FusionTensor<R> as core::ops::drop::Drop>::drop::h6e6a24f1bd02e894
+  18:        0x104a4568c - core::ptr::drop_in_place<burn_fusion::tensor::FusionTensor<burn_cubecl::fusion::FusionCubeRuntime<cubecl_wgpu::runtime::WgpuRuntime,u32>>>::ha95888d9bc8d0efa
+  19:        0x104a1d028 - burn_fusion::ops::float::<impl burn_tensor::tensor::ops::tensor::FloatTensorOps<burn_fusion::backend::Fusion<B>> for burn_fusion::backend::Fusion<B>>::float_mul::h21f5a5c7646aed76
+  20:        0x104a25a90 - burn_tensor::tensor::ops::activation::ActivationOps::sigmoid_backward::h4bcda6b434817b70
+  21:        0x104bc1cdc - burn_autodiff::ops::backward::unary::h9d5a5cf3c85e9875
+  22:        0x1049a0364 - <burn_autodiff::ops::base::OpsStep<B,T,SB,_> as burn_autodiff::graph::base::Step>::step::h51f4b33b941b154c
+  23:        0x104f1df7c - burn_autodiff::runtime::server::AutodiffServer::backward::h61fd0b9aa797ff7b
+  24:        0x104a10ab0 - <burn_autodiff::backend::Autodiff<B,C> as burn_tensor::tensor::backend::base::AutodiffBackend>::backward::h38befd9722349ca9
+  25:        0x104bbe4c8 - burn_tensor::tensor::api::autodiff::<impl burn_tensor::tensor::api::base::Tensor<B,_>>::backward::hc19ea8680b221527
+  26:        0x104c4bc94 - dreamer_rust::train::run::h160ad4e1cb1bc58c
+  27:        0x104c383e4 - dreamer_rust::main::h97434eec2218d87a
+  28:        0x104976e3c - std::sys::backtrace::__rust_begin_short_backtrace::hb642c9f2fc5ec600
+  29:        0x104c80c20 - std::rt::lang_start::{{closure}}::h29b1bc61d3728155
+  30:        0x105307f8c - std[7d7552da0923e8b2]::rt::lang_start_internal
+  31:        0x104cac440 - _main
+
+thread 'main' (4461167) panicked at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panicking.rs:233:5:
+panic in a destructor during cleanup
+thread caused non-unwinding panic. aborting.

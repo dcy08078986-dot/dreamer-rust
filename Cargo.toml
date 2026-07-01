@@ -11,3 +11,7 @@ rand = "0.8"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 image = "0.25"
+wgpu = "24"
+rapier3d = "0.22"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.3"

@@ -21,17 +21,18 @@ pub fn run<B: AutodiffBackend, E: Environment>(
     let flat_dim = c * h * w;
     let total_eps = config.max_episodes;
     let rounds = total_eps / num_envs;
+    let act_dim = envs[0].action_dim();  // use env's action dim, not config
 
     println!("=== Dreamer Discrete + CarRacing ({} envs, {} rounds) ===", num_envs, rounds);
     println!("Obs: {}x{}x{} | Action: {} | Embed: {} | Classes: {}",
         c, h, w, envs[0].action_dim(), config.embed_dim, config.num_classes);
 
     let mut world_model = WorldModel::<B>::init(
-        &device, config.deter_size, config.stoch_size, config.action_dim,
+        &device, config.deter_size, config.stoch_size, act_dim,
         config.embed_dim, config.image_channels, config.image_size,
     );
     let mut actor = Actor::<B>::init(
-        &device, config.deter_size, config.stoch_size, config.action_dim,
+        &device, config.deter_size, config.stoch_size, act_dim,
     );
     let mut critic = Critic::<B>::init(
         &device, config.deter_size, config.stoch_size,
@@ -63,7 +64,7 @@ pub fn run<B: AutodiffBackend, E: Environment>(
             let obs = env.reset::<B>(&device);
             let obs_flat = obs.reshape([1, flat_dim]);
             let init_s = world_model.init_state(1, &device);
-            let zero_action = Tensor::zeros([1, config.action_dim], &device);
+            let zero_action = Tensor::zeros([1, act_dim], &device);
             let mut cur_state = world_model.obs_step(&init_s, obs_flat.clone(), zero_action);
 
             let mut ep_obs: Vec<Tensor<B, 2>> = vec![obs_flat];

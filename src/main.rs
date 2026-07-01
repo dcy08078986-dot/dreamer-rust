@@ -10,10 +10,8 @@ mod envs;
 mod video;
 
 use burn::backend::{Autodiff, NdArray};
-use envs::maze::MazeEnv;
-use envs::pendulum::PendulumEnv;
-use envs::visual_navigation::VisualNavigation;
 use envs::bouncing_ball::BouncingBall;
+use envs::paddle_hitting::PaddleHitting;
 
 fn main() {
     type Backend = Autodiff<NdArray>;
@@ -36,10 +34,10 @@ fn main() {
                 .collect();
             train::run::<Backend, BouncingBall>(device, config, &mut envs);
         }
-        "pendulum" => {
-            println!("Creating {} parallel Pendulum environments...", num_envs);
-            let mut envs: Vec<PendulumEnv> = (0..num_envs)
-                .map(|i| PendulumEnv::new(
+        "paddle_hitting" => {
+            println!("Creating {} parallel PaddleHitting environments...", num_envs);
+            let mut envs: Vec<PaddleHitting> = (0..num_envs)
+                .map(|i| PaddleHitting::new(
                     config.env_max_steps,
                     config.action_dim,
                     config.image_channels,
@@ -47,31 +45,10 @@ fn main() {
                     config.seed + i as u64
                 ))
                 .collect();
-            train::run::<Backend, PendulumEnv>(device, config, &mut envs);
-        }
-        "visual_navigation" => {
-            println!("Creating {} parallel VisualNavigation environments...", num_envs);
-            let mut envs: Vec<VisualNavigation> = (0..num_envs)
-                .map(|i| VisualNavigation::new(
-                    config.env_max_steps,
-                    config.action_dim,
-                    config.image_channels,
-                    config.image_size,
-                    config.num_obstacles,
-                    config.seed + i as u64
-                ))
-                .collect();
-            train::run::<Backend, VisualNavigation>(device, config, &mut envs);
-        }
-        "maze" => {
-            println!("Creating {} parallel Maze environments...", num_envs);
-            let mut envs: Vec<MazeEnv> = (0..num_envs)
-                .map(|i| MazeEnv::new(15, 15, config.env_max_steps, config.image_size, config.seed + i as u64))
-                .collect();
-            train::run::<Backend, MazeEnv>(device, config, &mut envs);
+            train::run::<Backend, PaddleHitting>(device, config, &mut envs);
         }
         _ => {
-            panic!("Unknown environment type: {}. Use 'bouncing_ball', 'pendulum', 'visual_navigation', or 'maze'", config.env_type);
+            panic!("Unknown environment type: {}. Use 'bouncing_ball' or 'paddle_hitting'", config.env_type);
         }
     }
 }

@@ -29,7 +29,6 @@ pub struct Config {
     pub image_channels: usize,
     pub embed_dim: usize,
     pub render_size: usize,
-    pub num_obstacles: usize,
 
     // ── discrete RSSM ──
     pub num_classes: usize,
@@ -97,7 +96,6 @@ impl Default for Config {
             image_channels: 3,
             embed_dim: 128,
             render_size: 64,
-            num_obstacles: 0,
 
             num_classes: 32,
 
