@@ -117,12 +117,12 @@ impl Default for Config {
 
             env_type: "bouncing_ball".to_string(),
 
-            free_nats: 1.0,
+            free_nats: 0.5,
             kl_scale: 0.8,
             reward_scale: 0.5,
             kl_low_threshold: 0.5,
             kl_high_threshold: 5.0,
-            kl_weight_low: 1.2,
+            kl_weight_low: 3.0,
             kl_weight_high: 0.5,
         }
     }

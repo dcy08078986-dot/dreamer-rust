@@ -151,28 +151,57 @@ impl<B: Backend> RSSM<B> {
     }
 
     /// =========================
-    /// Imagination step (model rollout)
+    /// GRU step: compute h_t = f(h_{t-1}, z_{t-1}, a_{t-1})
+    /// This is the shared deterministic transition — prior and posterior
+    /// MUST use the same h_t for a given timestep.
+    /// =========================
+    pub fn get_deter(
+        &self,
+        state: &RSSMState<B>,
+        action: Tensor<B, 2>,
+    ) -> Tensor<B, 2> {
+        self.gru_step(state, action)
+    }
+
+    /// =========================
+    /// Build a state from prior: p(z_t | h_t)
+    /// =========================
+    pub fn prior_state(
+        &self,
+        deter: Tensor<B, 2>,
+    ) -> RSSMState<B> {
+        let (mean, std) = self.prior(deter.clone());
+        let stoch = self.sample(mean.clone(), std.clone());
+        RSSMState { deter, stoch, mean, std }
+    }
+
+    /// =========================
+    /// Build a state from posterior: q(z_t | h_t, o_t)
+    /// =========================
+    pub fn post_state(
+        &self,
+        deter: Tensor<B, 2>,
+        obs: Tensor<B, 2>,
+    ) -> RSSMState<B> {
+        let (mean, std) = self.post(deter.clone(), obs);
+        let stoch = self.sample(mean.clone(), std.clone());
+        RSSMState { deter, stoch, mean, std }
+    }
+
+    /// =========================
+    /// Imagination step (model rollout) — convenience wrapper
     /// =========================
     pub fn img_step(
         &self,
         state: &RSSMState<B>,
         action: Tensor<B, 2>,
     ) -> RSSMState<B> {
-        let deter = self.gru_step(state, action);
-
-        let (mean, std) = self.prior(deter.clone());
-        let stoch = self.sample(mean.clone(), std.clone());
-
-        RSSMState {
-            deter,
-            stoch,
-            mean,
-            std,
-        }
+        let deter = self.get_deter(state, action);
+        self.prior_state(deter)
     }
 
     /// =========================
-    /// Observation step (inference)
+    /// Observation step (inference) — convenience wrapper
     /// =========================
     pub fn obs_step(
         &self,
@@ -180,18 +209,7 @@ impl<B: Backend> RSSM<B> {
         obs: Tensor<B, 2>,
         action: Tensor<B, 2>,
     ) -> RSSMState<B> {
-        // 先通过GRU更新h_t (这是修复的关键)
-        let deter = self.gru_step(state, action);
-
-        // 用新的h_t计算后验
-        let (mean, std) = self.post(deter.clone(), obs);
-        let stoch = self.sample(mean.clone(), std.clone());
-
-        RSSMState {
-            deter,
-            stoch,
-            mean,
-            std,
-        }
+        let deter = self.get_deter(state, action);
+        self.post_state(deter, obs)
     }
 }

@@ -31,6 +31,11 @@ pub struct BouncingBall {
     image_size: usize,
     image_channels: usize,
 
+    // ── P1: trail + background variation ──
+    trail: Vec<(f32, f32)>,   // 最近 N 帧球的位置 (x, y)
+    trail_len: usize,
+    cloud_seed: u64,           // per-episode seed for cloud placement
+
     rng: rand::rngs::StdRng,
 }
 
@@ -57,6 +62,9 @@ impl BouncingBall {
             max_steps,
             image_size,
             image_channels,
+            trail: Vec::with_capacity(16),
+            trail_len: 12,
+            cloud_seed: seed,
             rng,
         }
     }
@@ -104,69 +112,119 @@ impl BouncingBall {
 
     fn render(&self) -> Vec<f32> {
         let size = self.image_size;
-        let mut pixels = vec![0.0f32; self.image_channels * size * size];
+        let n = size * size;
+        let mut pixels = vec![0.0f32; self.image_channels * n];
 
-        // 背景渐变（天空到地面）
+        // ── static sky gradient ──
         for y in 0..size {
-            let sky_intensity = (size - y) as f32 / size as f32;
+            let sky = (size - y) as f32 / size as f32;
             for x in 0..size {
-                let idx = (y * size + x) * self.image_channels;
-                // 天空蓝色渐变
-                pixels[idx] = sky_intensity * 0.3;     // R
-                pixels[idx + 1] = sky_intensity * 0.6; // G
-                pixels[idx + 2] = sky_intensity * 0.9; // B
+                let dst = y * size + x;
+                pixels[dst] = sky * 0.3;
+                pixels[n + dst] = sky * 0.6;
+                pixels[2 * n + dst] = sky * 0.9;
             }
         }
 
-        // 绘制地面线
+        // ── static ground line ──
         let ground_y = size - 1;
         for x in 0..size {
-            let idx = (ground_y * size + x) * self.image_channels;
-            pixels[idx] = 0.2;
-            pixels[idx + 1] = 0.8;
-            pixels[idx + 2] = 0.2;
+            let dst = ground_y * size + x;
+            pixels[dst] = 0.2;
+            pixels[n + dst] = 0.8;
+            pixels[2 * n + dst] = 0.2;
         }
 
-        // 绘制球（红色）
-        let ball_x = (self.x * size as f32) as usize;
-        let ball_y = ((1.0 - self.y) * size as f32) as usize; // 翻转Y轴
-        let ball_radius = (size / 16).max(2);
-
-        for dy in -(ball_radius as i32)..=(ball_radius as i32) {
-            for dx in -(ball_radius as i32)..=(ball_radius as i32) {
-                if dx * dx + dy * dy <= (ball_radius * ball_radius) as i32 {
-                    let px = (ball_x as i32 + dx).clamp(0, size as i32 - 1) as usize;
-                    let py = (ball_y as i32 + dy).clamp(0, size as i32 - 1) as usize;
-                    let idx = (py * size + px) * self.image_channels;
-
-                    // 红色球，带一点高光
-                    let dist_ratio = ((dx * dx + dy * dy) as f32).sqrt() / ball_radius as f32;
-                    let highlight = (1.0 - dist_ratio).max(0.0);
-
-                    pixels[idx] = 0.9 + highlight * 0.1;     // R
-                    pixels[idx + 1] = 0.1 + highlight * 0.5; // G
-                    pixels[idx + 2] = 0.1 + highlight * 0.3; // B
-                }
-            }
+        // ── P1: ball trail (fading circles) ──
+        let trail_len = self.trail.len();
+        for (i, &(tx, ty)) in self.trail.iter().enumerate() {
+            let alpha = 0.15 * (i + 1) as f32 / trail_len as f32; // newer = brighter
+            let trail_radius = (size / 24).max(2);
+            let trail_col = [0.9 * alpha, 0.2 * alpha, 0.15 * alpha];
+            self.draw_ball_chw(&mut pixels, tx, ty, trail_radius, size, n, trail_col);
         }
 
-        // 绘制速度向量（箭头）
-        if self.vx.abs() > 0.01 || self.vy.abs() > 0.01 {
-            let arrow_len = 10.min(size / 8);
-            let end_x = ball_x as i32 + (self.vx * arrow_len as f32 * 50.0) as i32;
-            let end_y = ball_y as i32 - (self.vy * arrow_len as f32 * 50.0) as i32;
+        // ── P0: ball (larger radius = size/8) ──
+        let ball_radius = (size / 8).max(4);
+        self.draw_ball_chw(&mut pixels, self.x, self.y, ball_radius, size, n,
+            [0.9, 0.15, 0.1]);
 
-            // 简单的线条绘制
-            self.draw_line(&mut pixels, ball_x, ball_y,
-                          end_x.clamp(0, size as i32 - 1) as usize,
-                          end_y.clamp(0, size as i32 - 1) as usize,
-                          size, [1.0, 1.0, 0.0]); // 黄色箭头
+        // ── velocity arrow ──
+        if self.vx.abs() > 0.005 || self.vy.abs() > 0.005 {
+            let bx = (self.x * size as f32) as usize;
+            let by = ((1.0 - self.y) * size as f32) as usize;
+            let al = 12.min(size / 6);
+            let ex = bx as i32 + (self.vx * al as f32 * 40.0) as i32;
+            let ey = by as i32 - (self.vy * al as f32 * 40.0) as i32;
+            self.draw_line(&mut pixels, bx, by,
+                ex.clamp(0, size as i32 - 1) as usize,
+                ey.clamp(0, size as i32 - 1) as usize,
+                size, n, [1.0, 1.0, 0.0]);
         }
 
         pixels
     }
 
-    fn draw_line(&self, pixels: &mut [f32], x0: usize, y0: usize, x1: usize, y1: usize, size: usize, color: [f32; 3]) {
+    /// Draw a filled circle (CHW) at normalized coords (x,y ∈ [0,1])
+    fn draw_ball_chw(&self, p: &mut [f32], cx: f32, cy: f32, radius: usize,
+                     size: usize, n: usize, color: [f32; 3]) {
+        let px = (cx * size as f32) as usize;
+        let py = ((1.0 - cy) * size as f32) as usize;
+        let r = radius as i32;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx * dx + dy * dy <= r * r {
+                    let sx = (px as i32 + dx).clamp(0, size as i32 - 1) as usize;
+                    let sy = (py as i32 + dy).clamp(0, size as i32 - 1) as usize;
+                    let dst = sy * size + sx;
+                    let dr = ((dx * dx + dy * dy) as f32).sqrt() / radius as f32;
+                    let hl = (1.0 - dr).max(0.0);
+                    // blend: add with highlight, saturate at 1.0
+                    p[dst] = (p[dst] + color[0] + hl * 0.2).min(1.0);
+                    p[n + dst] = (p[n + dst] + color[1] + hl * 0.3).min(1.0);
+                    p[2 * n + dst] = (p[2 * n + dst] + color[2] + hl * 0.2).min(1.0);
+                }
+            }
+        }
+    }
+
+    /// Draw random oval clouds (deterministic per episode via cloud_seed + step_count)
+    fn draw_clouds(&self, p: &mut [f32], size: usize, n: usize) {
+        // Simple pseudo-random based on cloud_seed
+        let mut h: u64 = self.cloud_seed.wrapping_add(self.step_count as u64);
+        for _ in 0..3 {
+            h = h.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let cx = ((h >> 32) as usize) % size;
+            h = h.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let cy = ((h >> 32) as usize) % (size / 3); // clouds in upper third
+            let rw = 4 + ((h >> 16) as usize % 10); // width
+            let rh: usize = 2 + ((h >> 40) as usize % 4); // height
+            for dy in -(rh as i32)..=(rh as i32) {
+                for dx in -(rw as i32)..=(rw as i32) {
+                    let d = (dx * dx) as f32 / (rw * rw) as f32
+                          + (dy * dy) as f32 / (rh * rh) as f32;
+                    if d <= 1.0 {
+                        let sx = (cx as i32 + dx).clamp(0, size as i32 - 1) as usize;
+                        let sy = (cy as i32 + dy).clamp(0, size as i32 - 1) as usize;
+                        let dst = sy * size + sx;
+                        let alpha = 0.08 * (1.0 - d);
+                        p[dst] = (p[dst] + alpha).min(1.0);
+                        p[n + dst] = (p[n + dst] + alpha).min(1.0);
+                        p[2 * n + dst] = (p[2 * n + dst] + alpha).min(1.0);
+                    }
+                }
+            }
+        }
+    }
+
+    fn push_trail(&mut self) {
+        self.trail.push((self.x, self.y));
+        if self.trail.len() > self.trail_len {
+            self.trail.remove(0);
+        }
+    }
+
+    fn draw_line(&self, pixels: &mut [f32], x0: usize, y0: usize, x1: usize, y1: usize, size: usize, n: usize, color: [f32; 3]) {
         let dx = (x1 as i32 - x0 as i32).abs();
         let dy = (y1 as i32 - y0 as i32).abs();
         let sx = if x0 < x1 { 1 } else { -1 };
@@ -176,12 +234,12 @@ impl BouncingBall {
         let mut x = x0 as i32;
         let mut y = y0 as i32;
 
-        for _ in 0..100 { // 限制迭代次数
+        for _ in 0..100 { // limit iterations
             if x >= 0 && x < size as i32 && y >= 0 && y < size as i32 {
-                let idx = (y as usize * size + x as usize) * self.image_channels;
-                pixels[idx] = color[0];
-                pixels[idx + 1] = color[1];
-                pixels[idx + 2] = color[2];
+                let dst = (y as usize) * size + (x as usize);
+                pixels[dst] = color[0];
+                pixels[n + dst] = color[1];
+                pixels[2 * n + dst] = color[2];
             }
 
             if x == x1 as i32 && y == y1 as i32 { break; }
@@ -219,6 +277,8 @@ impl Environment for BouncingBall {
         self.vx = self.rng.gen_range(-0.01..0.01);
         self.vy = 0.0;
         self.step_count = 0;
+        self.trail.clear();
+        self.cloud_seed = self.rng.r#gen(); // new cloud positions per episode
 
         let pixels = self.render();
         let [c, h, w] = self.obs_shape();
@@ -229,10 +289,12 @@ impl Environment for BouncingBall {
         let force_x = action[0].clamp(-1.0, 1.0);
 
         self.physics_step(force_x);
+        self.push_trail();
         self.step_count += 1;
 
         let reward = self.compute_reward();
-        let done = self.step_count >= self.max_steps || self.y <= 0.01;
+        let on_ground = self.y <= 0.01 && self.vy.abs() < 0.003;
+        let done = self.step_count >= self.max_steps || on_ground;
 
         let pixels = self.render();
         let [c, h, w] = self.obs_shape();

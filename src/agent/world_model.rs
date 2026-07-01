@@ -78,7 +78,8 @@ impl<B: Backend> WorldModel<B> {
         kl_weight_low: f32,
         kl_weight_high: f32,
         kl_scale_default: f32,
-    ) -> Tensor<B, 1> {
+        free_nats: f32,
+    ) -> (Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>) {
         let [batch, seq_len] = [batch_obs.dims()[0], batch_obs.dims()[1]];
         let device = &batch_obs.device();
 
@@ -87,8 +88,7 @@ impl<B: Backend> WorldModel<B> {
         let seq_len_tensor = Tensor::full([1], seq_len as f32, device);
         let _one_tensor: Tensor<B, 1> = Tensor::full([1], 1.0_f32, device);
         let half_tensor: Tensor<B, 1> = Tensor::full([1], 0.5_f32, device);
-        let free_nats = Tensor::full([1, 1], 1.0_f32, device);
-        let _zero_tensor: Tensor<B, 1> = Tensor::full([1], 0.0_f32, device);
+        let free_nats_tensor = Tensor::full([1, 1], free_nats, device);
 
         let mut obs_loss = Tensor::zeros([1], device);
         let mut reward_loss = Tensor::zeros([1], device);
@@ -99,10 +99,16 @@ impl<B: Backend> WorldModel<B> {
             let act_t = batch_action.clone().narrow(1, t, 1).squeeze(1);
             let rew_t = batch_reward.clone().narrow(1, t, 1).squeeze(1);
 
-            let prior_state = self.rssm.img_step(&state, act_t.clone());
+            // ── P0 fix: prior and posterior share the SAME h_t ──
+            // 1. Compute shared deterministic state h_t = f(h_{t-1}, z_{t-1}, a_{t-1})
+            let deter = self.rssm.get_deter(&state, act_t.clone());
 
+            // 2. Prior: p(z_t | h_t) — no observation
+            let prior_state = self.rssm.prior_state(deter.clone());
+
+            // 3. Posterior: q(z_t | h_t, o_t) — same h_t, plus observation
             let obs_emb = self.encode(obs_t);
-            let post_state = self.rssm.obs_step(&prior_state, obs_emb, act_t);
+            let post_state = self.rssm.post_state(deter, obs_emb);
 
             let recon = self.reconstruct(&post_state);
             let target = batch_obs.clone().narrow(1, t, 1).squeeze(1);
@@ -117,6 +123,7 @@ impl<B: Backend> WorldModel<B> {
             let rew_loss = rew_squared.mean();
             reward_loss = reward_loss.add(rew_loss);
 
+            // KL between posterior and prior (same h_t, so KL measures info from obs)
             let kl = analytic_kl(
                 post_state.mean.clone(),
                 post_state.std.clone(),
@@ -124,7 +131,7 @@ impl<B: Backend> WorldModel<B> {
                 prior_state.std.clone(),
             );
 
-            let kl_adj = kl.sub(free_nats.clone()).clamp_min(0.0_f32);
+            let kl_adj = kl.sub(free_nats_tensor.clone()).clamp_min(0.0_f32);
             let kl_free = kl_adj.mean();
             kl_loss = kl_loss.add(kl_free);
 
@@ -148,9 +155,12 @@ impl<B: Backend> WorldModel<B> {
 
         let kl_weight_tensor = Tensor::full([1], kl_weight, &total_kl_loss.device());
 
-        total_obs_loss
-            .add(total_reward_loss.mul(half_tensor))
-            .add(total_kl_loss.mul(kl_weight_tensor))
+        let total_device = total_kl_loss.device();
+        let total = total_obs_loss.clone()
+            .add(total_reward_loss.clone().mul(half_tensor))
+            .add(total_kl_loss.clone().mul(kl_weight_tensor));
+
+        (total, total_obs_loss, total_reward_loss, total_kl_loss, Tensor::full([1], kl_weight, &total_device))
     }
 }
 

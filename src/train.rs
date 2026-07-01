@@ -53,7 +53,7 @@ pub fn run<B: AutodiffBackend, E: Environment>(
     let mut replay = ReplayBuffer::<B>::new(config.replay_capacity);
     let mut reference_ep: Option<Episode<B>> = None;
     let mut ep_counter: usize = 0;
-    let effective_batch = (config.batch_size * num_envs).min(config.batch_size.max(1));
+    let effective_batch = config.batch_size.max(1);
 
     for round in 0..rounds {
         let mut round_reward: f32 = 0.0;
@@ -116,12 +116,18 @@ pub fn run<B: AutodiffBackend, E: Environment>(
 
         // ── 2. Train world model ──
         let mut model_loss_val: f32 = 0.0;
+        let mut obs_loss_val: f32 = 0.0;
+        let mut rew_loss_val: f32 = 0.0;
+        let mut kl_loss_val: f32 = 0.0;
+        let mut kl_weight_val: f32 = 0.0;
+        // More world model updates during warm-up
+        let wm_iters = if ep_counter <= 100 { 10 * num_envs } else { 5 * num_envs };
         if replay.len() >= 5 {
-            for _ in 0..(5 * num_envs) {
+            for _ in 0..wm_iters {
                 let batch = replay.sample(effective_batch.min(replay.len()),
                     config.batch_length.min(round_steps), &device);
                 let reward_2d = batch.reward.clone().squeeze(2);
-                let loss = world_model.train_step(
+                let (loss, obs_loss, rew_loss, kl_loss, kl_w) = world_model.train_step(
                     batch.obs,
                     batch.action,
                     reward_2d,
@@ -130,19 +136,25 @@ pub fn run<B: AutodiffBackend, E: Environment>(
                     config.kl_weight_low,
                     config.kl_weight_high,
                     config.kl_scale,
+                    config.free_nats,
                 );
                 let loss_data = loss.clone().to_data();
                 model_loss_val = loss_data.as_slice::<f32>().unwrap()[0];
+                obs_loss_val = obs_loss.clone().to_data().as_slice::<f32>().unwrap()[0];
+                rew_loss_val = rew_loss.clone().to_data().as_slice::<f32>().unwrap()[0];
+                kl_loss_val = kl_loss.clone().to_data().as_slice::<f32>().unwrap()[0];
+                kl_weight_val = kl_w.clone().to_data().as_slice::<f32>().unwrap()[0];
                 let grads = loss.backward();
                 let grads_wm = GradientsParams::from_grads(grads, &world_model);
                 world_model = model_optim.step(config.model_lr, world_model, grads_wm);
             }
         }
 
-        // ── 3. Train actor-critic ──
+        // ── 3. Train actor-critic (skip during warm-up) ──
         let mut actor_loss_val: f32 = 0.0;
         let mut critic_loss_val: f32 = 0.0;
-        if replay.len() >= 5 {
+        let warmup_eps = 100; // first 100 episodes: only train world model
+        if replay.len() >= 5 && ep_counter > warmup_eps {
             let imag_horizon = config.imag_horizon.min(15);
             let mut imag_states: Vec<crate::networks::rssm::RSSMState<B>> = Vec::new();
             let mut imag_actions: Vec<Tensor<B, 2>> = Vec::new();
@@ -251,8 +263,9 @@ pub fn run<B: AutodiffBackend, E: Environment>(
 
         // ── 6. Summary ──
         let avg_reward = round_reward / num_envs as f32;
-        println!("round {:4} | ep {:4} | avg_reward {:+.4} | model {:.4} | actor {:.4} | critic {:.4}",
-            round, last_ep, avg_reward, model_loss_val, actor_loss_val, critic_loss_val);
+        let warmup_tag = if ep_counter <= 100 { " [WARMUP]" } else { "" };
+        println!("round {:4} | ep {:4} | avg_reward {:+.4} | model {:.4} (obs:{:.4} rew:{:.4} kl:{:.4} kl_w:{:.2}) | actor {:.4} | critic {:.4}{}",
+            round, last_ep, avg_reward, model_loss_val, obs_loss_val, rew_loss_val, kl_loss_val, kl_weight_val, actor_loss_val, critic_loss_val, warmup_tag);
     }
     println!("=== Done ===");
 }

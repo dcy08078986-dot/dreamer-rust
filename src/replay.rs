@@ -66,7 +66,7 @@ impl<B: Backend> ReplayBuffer<B> {
 
         // Filter to episodes long enough
         let valid_eps: Vec<_> = self.episodes.iter()
-            .filter(|ep| ep.obs.len() > seq_len)
+            .filter(|ep| ep.obs.len() >= seq_len + 1)
             .collect();
         if valid_eps.is_empty() { return Batch { obs: Tensor::zeros([1, 1, 1], _device), action: Tensor::zeros([1, 1, 1], _device), reward: Tensor::zeros([1, 1, 1], _device), done: Tensor::zeros([1, 1, 1], _device) }; }
 
