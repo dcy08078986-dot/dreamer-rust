@@ -7,9 +7,9 @@ use crate::config::Config;
 use crate::envs::Environment;
 use crate::replay::{Episode, ReplayBuffer};
 use crate::agent::world_model::WorldModel;
-use crate::agent::actor_critic::{Actor, Critic};
+use crate::agent::actor_critic::{Actor, Critic, imagination_losses};
+use crate::networks::rssm::RSSMState;
 use crate::video::{save_frame, frames_to_mp4, make_comparison_frame};
-use crate::tools::symlog;
 
 pub fn run<B: AutodiffBackend, E: Environment>(
     device: B::Device,
@@ -23,9 +23,9 @@ pub fn run<B: AutodiffBackend, E: Environment>(
     let rounds = total_eps / num_envs;
     let act_dim = envs[0].action_dim();  // use env's action dim, not config
 
-    println!("=== Dreamer Discrete + CarRacing ({} envs, {} rounds) ===", num_envs, rounds);
-    println!("Obs: {}x{}x{} | Action: {} | Embed: {} | Classes: {}",
-        c, h, w, envs[0].action_dim(), config.embed_dim, config.num_classes);
+    println!("=== Dreamer (monolithic RSSM, {} envs, {} rounds) ===", num_envs, rounds);
+    println!("Obs: {}x{}x{} | Action: {} | Embed: {} | motion_loss: {}",
+        c, h, w, act_dim, config.embed_dim, config.use_motion_loss);
 
     let mut world_model = WorldModel::<B>::init(
         &device, config.deter_size, config.stoch_size, act_dim,
@@ -76,34 +76,33 @@ pub fn run<B: AutodiffBackend, E: Environment>(
 
             for _t in 0..env.max_steps() {
                 let (action, _logp) = actor.sample(&cur_state);
+                let action = action.detach();
                 let action_data = action.to_data();
                 let act_vals = action_data.as_slice::<f32>().unwrap().to_vec();
 
                 let (next_obs, reward, done) = env.step::<B>(&act_vals, &device);
                 let next_obs_flat = next_obs.reshape([1, flat_dim]);
 
-                let _mean_rew = world_model.predict_reward(&cur_state);
-                let uncertainty_val = 0.0_f32;
-
                 ep_act.push(action.clone());
                 ep_rew.push(Tensor::full([1, 1], reward, &device));
                 ep_done.push(Tensor::full([1, 1], if done { 1.0f32 } else { 0.0 }, &device));
                 ep_obs.push(next_obs_flat.clone());
-                total_reward += reward + config.exploration_scale * uncertainty_val;
+                total_reward += reward;
                 steps += 1;
                 if done { break; }
-                cur_state = world_model.obs_step(&cur_state, next_obs_flat, action);
+                cur_state = world_model.obs_step(&cur_state, next_obs_flat, action).detach();
             }
 
-            let ep_obs_trimmed = ep_obs[..steps].to_vec();
+            // Keep ALL observations (steps+1 of them): the final transition is
+            // trainable and short episodes stay usable down to seq_len steps.
             replay.push(Episode {
-                obs: ep_obs_trimmed.clone(), action: ep_act.clone(),
+                obs: ep_obs.clone(), action: ep_act.clone(),
                 reward: ep_rew.clone(), done: ep_done.clone(),
             });
             if reference_ep.is_none() {
                 reference_ep = Some(Episode {
-                    obs: ep_obs_trimmed.clone(), action: ep_act.clone(),
-                    reward: ep_rew.clone(), done: ep_done.clone(),
+                    obs: ep_obs, action: ep_act,
+                    reward: ep_rew, done: ep_done,
                 });
             }
             round_reward += total_reward;
@@ -119,133 +118,76 @@ pub fn run<B: AutodiffBackend, E: Environment>(
         let mut obs_loss_val: f32 = 0.0;
         let mut rew_loss_val: f32 = 0.0;
         let mut kl_loss_val: f32 = 0.0;
-        let mut kl_weight_val: f32 = 0.0;
-        // More world model updates during warm-up
-        let wm_iters = if ep_counter <= 100 { 10 * num_envs } else { 5 * num_envs };
+        let mut motion_mse_val: f32 = 0.0;
+        let wm_iters = if ep_counter <= 50 {
+            20
+        } else if ep_counter <= 150 {
+            10
+        } else {
+            5
+        };
         if replay.len() >= 5 {
             for _ in 0..wm_iters {
                 let batch = replay.sample(effective_batch.min(replay.len()),
-                    config.batch_length.min(round_steps), &device);
+                    config.batch_length.min(round_steps.max(2)), &device);
                 let reward_2d = batch.reward.clone().squeeze(2);
-                let (loss, obs_loss, rew_loss, kl_loss, kl_w) = world_model.train_step(
-                    batch.obs,
-                    batch.action,
-                    reward_2d,
-                    config.kl_low_threshold,
-                    config.kl_high_threshold,
-                    config.kl_weight_low,
-                    config.kl_weight_high,
-                    config.kl_scale,
-                    config.free_nats,
-                );
-                let loss_data = loss.clone().to_data();
-                model_loss_val = loss_data.as_slice::<f32>().unwrap()[0];
-                obs_loss_val = obs_loss.clone().to_data().as_slice::<f32>().unwrap()[0];
-                rew_loss_val = rew_loss.clone().to_data().as_slice::<f32>().unwrap()[0];
-                kl_loss_val = kl_loss.clone().to_data().as_slice::<f32>().unwrap()[0];
-                kl_weight_val = kl_w.clone().to_data().as_slice::<f32>().unwrap()[0];
-                let grads = loss.backward();
+                let diag = world_model.train_step(batch.obs, batch.action, reward_2d, &config);
+                model_loss_val = tensor_scalar(&diag.total);
+                obs_loss_val = tensor_scalar(&diag.obs_loss);
+                rew_loss_val = tensor_scalar(&diag.reward_loss);
+                kl_loss_val = tensor_scalar(&diag.kl_loss);
+                motion_mse_val = tensor_scalar(&diag.motion_mse);
+                let grads = diag.total.backward();
                 let grads_wm = GradientsParams::from_grads(grads, &world_model);
                 world_model = model_optim.step(config.model_lr, world_model, grads_wm);
             }
         }
 
-        // ── 3. Train actor-critic (skip during warm-up) ──
+        // ── 3. Train actor-critic on imagined rollouts (skip during warm-up) ──
         let mut actor_loss_val: f32 = 0.0;
         let mut critic_loss_val: f32 = 0.0;
         let warmup_eps = 100; // first 100 episodes: only train world model
         if replay.len() >= 5 && ep_counter > warmup_eps {
             let imag_horizon = config.imag_horizon.min(15);
-            let mut imag_states: Vec<crate::networks::rssm::RSSMState<B>> = Vec::new();
-            let mut imag_actions: Vec<Tensor<B, 2>> = Vec::new();
+            let imag_batch = config.imag_batch.min(replay.len()).max(1);
+
+            // Batch of start states re-encoded from replay observations.
+            let start = replay.sample(imag_batch, 1, &device);
+            let start_obs = start.obs.narrow(1, 0, 1).squeeze(1).detach();
+            let b = start_obs.dims()[0];
+            let zero_action = Tensor::zeros([b, act_dim], &device);
+            let init_state = world_model.init_state(b, &device);
+            let mut state = detach_state(&world_model.obs_step(&init_state, start_obs, zero_action));
+
+            // Rollout with detached states: REINFORCE needs no dynamics gradients,
+            // and detaching keeps the graph (and CPU memory) per-step.
+            let mut imag_states: Vec<RSSMState<B>> = vec![state.clone()];
+            let mut imag_raw_actions: Vec<Tensor<B, 2>> = Vec::new();
             let mut imag_rewards: Vec<Tensor<B, 1>> = Vec::new();
-
-            // 从replay buffer采样真实状态作为起点
-            // 注意：需要detach并重新通过模型以启用梯度追踪
-            let start_batch = replay.sample(1, 1, &device);
-            let start_obs = start_batch.obs.narrow(1, 0, 1).squeeze(1).detach();
-            let start_act = start_batch.action.narrow(1, 0, 1).squeeze(1).detach();
-
-            // 通过world model重新编码以启用梯度
-            let start_obs_emb = world_model.encode(start_obs);
-            let init_state = world_model.init_state(1, &device);
-            let mut img_state = world_model.rssm.obs_step(&init_state, start_obs_emb, start_act);
-
             for _t in 0..imag_horizon {
-                let (action, _log_prob) = actor.sample(&img_state);
-                let reward = world_model.predict_reward(&img_state);
-                let next_state = world_model.img_step(&img_state, action.clone());
-                imag_states.push(img_state);
-                imag_actions.push(action.clone());
-                imag_rewards.push(reward.clone());
-                img_state = next_state;
+                let (action, raw, _logp) = actor.sample_with_raw(&state);
+                let next = detach_state(&world_model.img_step(&state, action.detach()));
+                // Reward on ARRIVING at the next state (symlog space; head is symlog-trained).
+                imag_rewards.push(world_model.predict_reward(&next).detach());
+                imag_raw_actions.push(raw.detach());
+                imag_states.push(next.clone());
+                state = next;
             }
-            imag_states.push(img_state);
 
-            if !imag_actions.is_empty() {
-                let rewards_tensor: Tensor<B, 2> = Tensor::stack(imag_rewards.clone(), 1);
-                let rewards_detached = rewards_tensor.detach();
-                let gamma = config.discount as f64;
-                let mut critic_values: Vec<Tensor<B, 1>> = Vec::new();
-                for state in imag_states.iter() {
-                    let s = crate::networks::rssm::RSSMState {
-                        deter: state.deter.clone().detach(),
-                        stoch: state.stoch.clone().detach(),
-                        mean: state.mean.clone().detach(),
-                        std: state.std.clone().detach(),
-                    };
-                    critic_values.push(critic.forward(&s));
-                }
-                let horizon = imag_actions.len();
-                let values_full: Tensor<B, 2> = Tensor::stack(critic_values.clone(), 1);
+            let (actor_loss, critic_loss) = imagination_losses(
+                &actor, &critic, &imag_states, &imag_raw_actions, &imag_rewards,
+                config.discount as f64, config.lambda_ as f64, config.entropy_coef,
+            );
 
-                let mut actor_loss = Tensor::zeros([1], &device);
-                for t in 0..horizon {
-                    let (mean, log_std) = actor.forward(&imag_states[t]);
-                    let action = imag_actions[t].clone();
-                    let std = log_std.exp().add_scalar(1e-4);
-                    let var = std.clone().mul(std.clone());
-                    let diff = action.clone() - mean;
-                    let term1 = diff.clone().mul(diff) / var.add_scalar(1e-8);
-                    let term2 = std.mul_scalar(2.0).log();
-                    let sum = (term1 + term2).add_scalar(1.837877f64);
-                    let mut log_prob: Tensor<B, 1> = sum.sum_dim(1).mul_scalar(-0.5).squeeze(1);
-                    let action_tanh = action.tanh();
-                    let tanh_grad = action_tanh.clone().mul(action_tanh.clone()).neg().add_scalar(1.0);
-                    log_prob = log_prob - tanh_grad.clamp_min(1e-8).log().sum_dim(1).squeeze(1);
+            critic_loss_val = tensor_scalar(&critic_loss);
+            let c_grads = critic_loss.backward();
+            let grads_c = GradientsParams::from_grads(c_grads, &critic);
+            critic = critic_optim.step(config.critic_lr, critic, grads_c);
 
-                    // 使用symlog变换处理奖励和值函数
-                    let r_t = rewards_detached.clone().narrow(1, t, 1).squeeze(1);
-                    let r_t_symlog = symlog(r_t.clone());
-                    let v_t = critic_values[t].clone();
-                    let v_next = critic_values[t + 1].clone();
-
-                    // 在symlog空间计算优势
-                    let adv = (r_t_symlog + v_next.mul_scalar(gamma) - v_t).detach();
-                    actor_loss = actor_loss + log_prob.neg().mul(adv).mean().reshape([1]);
-                }
-                actor_loss = actor_loss.div_scalar(horizon as f64);
-
-                // Critic在symlog空间训练
-                let val_now = values_full.clone().narrow(1, 0, horizon);
-                let val_next = values_full.narrow(1, 1, horizon);
-                let rewards_symlog = symlog(rewards_detached.clone());
-                let target = rewards_symlog + val_next.mul_scalar(gamma);
-                let diff = target - val_now;
-                let critic_loss = diff.clone().mul(diff).mean().reshape([1]);
-
-                let c_data = critic_loss.clone().to_data();
-                critic_loss_val = c_data.as_slice::<f32>().unwrap()[0];
-                let c_grads = critic_loss.backward();
-                let grads_c = GradientsParams::from_grads(c_grads, &critic);
-                critic = critic_optim.step(config.critic_lr, critic, grads_c);
-
-                let a_data = actor_loss.clone().to_data();
-                actor_loss_val = a_data.as_slice::<f32>().unwrap()[0];
-                let a_grads = actor_loss.backward();
-                let grads_a = GradientsParams::from_grads(a_grads, &actor);
-                actor = actor_optim.step(config.actor_lr, actor, grads_a);
-            }
+            actor_loss_val = tensor_scalar(&actor_loss);
+            let a_grads = actor_loss.backward();
+            let grads_a = GradientsParams::from_grads(a_grads, &actor);
+            actor = actor_optim.step(config.actor_lr, actor, grads_a);
         }
 
         // ── 4. Save checkpoint ──
@@ -264,10 +206,18 @@ pub fn run<B: AutodiffBackend, E: Environment>(
         // ── 6. Summary ──
         let avg_reward = round_reward / num_envs as f32;
         let warmup_tag = if ep_counter <= 100 { " [WARMUP]" } else { "" };
-        println!("round {:4} | ep {:4} | avg_reward {:+.4} | model {:.4} (obs:{:.4} rew:{:.4} kl:{:.4} kl_w:{:.2}) | actor {:.4} | critic {:.4}{}",
-            round, last_ep, avg_reward, model_loss_val, obs_loss_val, rew_loss_val, kl_loss_val, kl_weight_val, actor_loss_val, critic_loss_val, warmup_tag);
+        println!("round {:4} | ep {:4} | avg_reward {:+.4} | model {:.4} (obs:{:.4} ball:{:.4} rew:{:.4} kl:{:.4}) | actor {:.4} | critic {:.4}{}",
+            round, last_ep, avg_reward, model_loss_val, obs_loss_val, motion_mse_val, rew_loss_val, kl_loss_val, actor_loss_val, critic_loss_val, warmup_tag);
     }
     println!("=== Done ===");
+}
+
+fn tensor_scalar<B: Backend>(t: &Tensor<B, 1>) -> f32 {
+    t.clone().to_data().as_slice::<f32>().unwrap()[0]
+}
+
+fn detach_state<B: Backend>(s: &RSSMState<B>) -> RSSMState<B> {
+    s.detach()
 }
 
 fn generate_video<B: Backend>(wm: &WorldModel<B>, ref_ep: Option<&Episode<B>>, ep_num: usize, c: usize, h: usize, w: usize) {

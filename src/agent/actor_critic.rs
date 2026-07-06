@@ -2,7 +2,7 @@
 
 use burn::module::Module;
 use burn::nn::{Linear, LinearConfig};
-use burn::tensor::{backend::Backend, Tensor, Distribution::Normal, Int};
+use burn::tensor::{backend::Backend, Tensor, Distribution::Normal};
 use burn::tensor::activation::relu;
 use crate::networks::rssm::RSSMState;
 
@@ -37,31 +37,47 @@ impl<B: Backend> Actor<B> {
         (mean, log_std)
     }
 
-    pub fn sample(
+    /// Sample a tanh-squashed Gaussian action.
+    /// Returns (squashed action, RAW pre-tanh action, log_prob of the squashed action).
+    pub fn sample_with_raw(
         &self,
         state: &RSSMState<B>,
-    ) -> (Tensor<B, 2>, Tensor<B, 1>) {
+    ) -> (Tensor<B, 2>, Tensor<B, 2>, Tensor<B, 1>) {
         let (mean, log_std) = self.forward(state);
-        let std = log_std.exp().add_scalar(1e-4);
-
+        let std = log_std.clone().exp().add_scalar(1e-4);
         let eps = Tensor::random(mean.shape(), Normal(0.0, 1.0), &mean.device());
-        let raw_action = mean.clone() + eps * std.clone();
+        let raw = mean.clone() + eps * std;
+        let action = raw.clone().tanh();
+        let log_prob = tanh_gaussian_log_prob(mean, log_std, raw.clone());
+        (action, raw, log_prob)
+    }
 
-        let var = std.clone().mul(std.clone());
-        let diff = raw_action.clone() - mean;
-
-        let term1 = diff.clone().mul(diff.clone()) / var.add_scalar(1e-8);
-        let term2 = std.mul_scalar(2.0).log();
-        let sum = (term1 + term2).add_scalar(1.837877f64);
-
-        let mut log_prob = sum.sum_dim(1).mul_scalar(-0.5).squeeze(1);
-
-        let action = raw_action.tanh();
-        let tanh_grad = action.clone().mul(action.clone()).neg().add_scalar(1.0);
-        log_prob = log_prob - tanh_grad.clamp_min(1e-8).log().sum_dim(1).squeeze(1);
-
+    pub fn sample(&self, state: &RSSMState<B>) -> (Tensor<B, 2>, Tensor<B, 1>) {
+        let (action, _raw, log_prob) = self.sample_with_raw(state);
         (action, log_prob)
     }
+}
+
+/// Log-density of a tanh-squashed Gaussian, evaluated at the RAW (pre-tanh) action:
+///   log N(raw; mean, std) - sum log(1 - tanh(raw)^2)
+/// The Gaussian density must be evaluated at the raw sample — evaluating it at the
+/// squashed action (as the previous implementation did) is not a valid log-prob.
+pub fn tanh_gaussian_log_prob<B: Backend>(
+    mean: Tensor<B, 2>,
+    log_std: Tensor<B, 2>,
+    raw_action: Tensor<B, 2>,
+) -> Tensor<B, 1> {
+    let std = log_std.clone().exp().add_scalar(1e-4);
+    let var = std.clone().mul(std);
+    let diff = raw_action.clone() - mean;
+    // -0.5 * [ (x-mu)^2/var + 2 log std + log(2 pi) ]
+    let quad = diff.clone().mul(diff).div(var.add_scalar(1e-8));
+    let sum = (quad + log_std.mul_scalar(2.0)).add_scalar(1.837877f64); // ln(2*pi)
+    let gauss: Tensor<B, 1> = sum.sum_dim(1).mul_scalar(-0.5).squeeze(1);
+
+    let squashed = raw_action.tanh();
+    let jac = squashed.clone().mul(squashed).neg().add_scalar(1.0); // 1 - tanh^2
+    gauss - jac.clamp_min(1e-6).log().sum_dim(1).squeeze(1)
 }
 
 // ─── Critic（价值网络）───
@@ -87,110 +103,78 @@ impl<B: Backend> Critic<B> {
     }
 }
 
-// ─── Lambda 回报计算 ───
+// ─── Lambda 回报（list 形式，梯度路径不经过 stack/select）───
 ///
-/// Computes TD(λ) returns using the standard backward recursion.
-/// Avoids `select_assign` due to burn 0.18 backend limitations.
-pub fn compute_lambda_returns<B: Backend>(
-    rewards: Tensor<B, 2>,
-    values: Tensor<B, 2>,
+/// TD(λ) returns via backward recursion over [B]-shaped tensors.
+/// rewards: H entries, values: H+1 entries (bootstrap at the end).
+/// All inputs should be detached; the output is a detached target.
+pub fn lambda_returns_list<B: Backend>(
+    rewards: &[Tensor<B, 1>],
+    values: &[Tensor<B, 1>],
     gamma: f64,
     lambda: f64,
-) -> Tensor<B, 2> {
-    let horizon = rewards.dims()[1];
-    let device = &rewards.device();
+) -> Vec<Tensor<B, 1>> {
+    let horizon = rewards.len();
+    assert_eq!(values.len(), horizon + 1, "values must include the bootstrap");
 
-    // rewards: [B, horizon], values: [B, horizon+1] (with bootstrapping)
-    // Build returns backward, collecting [B] slices
-    let mut ret_list: Vec<Tensor<B, 1>> = Vec::with_capacity(horizon + 1);
-
-    // Bootstrap: ret[H] = values[H]
-    let last_idx = Tensor::<B, 1, Int>::from_ints([(horizon as i64)], device);
-    let ret_next = values.clone().select(1, last_idx).squeeze(1); // [B]
-    ret_list.push(ret_next);
-
-    // Backward recursion
+    let mut ret_next = values[horizon].clone();
+    let mut returns: Vec<Tensor<B, 1>> = Vec::with_capacity(horizon);
     for t in (0..horizon).rev() {
-        let idx_t = Tensor::<B, 1, Int>::from_ints([(t as i64)], device);
-        let idx_next = Tensor::<B, 1, Int>::from_ints([((t + 1) as i64)], device);
-
-        let r_t = rewards.clone().select(1, idx_t).squeeze(1); // [B]
-        let v_next = values.clone().select(1, idx_next).squeeze(1); // [B]
-        let ret_next = ret_list[0].clone(); // [B]
-
-        // ret[t] = r_t + gamma * ((1-lambda) * v_next + lambda * ret_next)
-        let one_minus_lambda = 1.0 - lambda;
-        let term = v_next.mul_scalar(one_minus_lambda) + ret_next.mul_scalar(lambda);
-        let ret_t = r_t + term.mul_scalar(gamma);
-        ret_list.insert(0, ret_t);
+        let v_next = values[t + 1].clone();
+        // ret[t] = r_t + gamma * ((1-lambda) * v_next + lambda * ret[t+1])
+        let mix = v_next.mul_scalar(1.0 - lambda) + ret_next.clone().mul_scalar(lambda);
+        let ret_t = rewards[t].clone() + mix.mul_scalar(gamma);
+        returns.push(ret_t.clone());
+        ret_next = ret_t;
     }
-
-    // ret_list has horizon+1 elements (t=0..horizon), each [B]
-    // Stack to [B, horizon+1], then narrow to [B, horizon]
-    let full = Tensor::stack(ret_list, 1); // [B, horizon+1]
-    full.narrow(1, 0, horizon) // [B, horizon]
+    returns.reverse();
+    returns
 }
 
-// ─── 在想象轨迹上计算 Actor-Critic 损失 ───
-pub fn actor_critic_loss<B: Backend>(
+/// Actor and critic losses over an imagined trajectory (REINFORCE + TD(λ)).
+///
+/// imag_states: H+1 states, detached from the world-model graph.
+/// imag_raw_actions: H RAW (pre-tanh) actions stored during the rollout.
+/// rewards: H predicted rewards in symlog space, detached, [B] each.
+///
+/// The critic regresses detached λ-returns; the actor maximizes
+/// log π(a|s) · advantage + entropy_coef · H[π].
+pub fn imagination_losses<B: Backend>(
     actor: &Actor<B>,
     critic: &Critic<B>,
     imag_states: &[RSSMState<B>],
-    imag_actions: &[Tensor<B, 2>],
-    _imag_log_probs: &[Tensor<B, 1>],
-    rewards: Tensor<B, 2>,
+    imag_raw_actions: &[Tensor<B, 2>],
+    rewards: &[Tensor<B, 1>],
     gamma: f64,
     lambda: f64,
-    _entropy_coef: f64,
+    entropy_coef: f64,
 ) -> (Tensor<B, 1>, Tensor<B, 1>) {
-    let horizon = rewards.dims()[1];
-    let device = &rewards.device();
+    let horizon = imag_raw_actions.len();
+    let device = rewards[0].device();
 
-    // Compute values via critic (keeps critic params in autodiff graph)
-    let mut values = Vec::with_capacity(horizon + 1);
-    for state in imag_states.iter() {
-        values.push(critic.forward(state));
-    }
-    let v_boot = values.last().unwrap().clone();
-    let values_tensor = Tensor::stack(values[..horizon].to_vec(), 1);
-    let v_boot_col = v_boot.unsqueeze_dim::<2>(1);
-    let values_full = Tensor::cat(vec![values_tensor.clone(), v_boot_col], 1);
+    // Critic values (in graph) and their detached copies for target computation.
+    let values: Vec<Tensor<B, 1>> = imag_states.iter().map(|s| critic.forward(s)).collect();
+    let values_detached: Vec<Tensor<B, 1>> = values.iter().map(|v| v.clone().detach()).collect();
+    let returns = lambda_returns_list(rewards, &values_detached, gamma, lambda);
 
-    let returns = compute_lambda_returns(rewards, values_full, gamma, lambda);
-    let advantages = (returns.clone() - values_tensor.clone()).detach();
-
-    // Actor loss: recompute action distribution to keep actor params in graph
-    let mut actor_loss = Tensor::zeros([1], device);
+    let mut actor_loss = Tensor::zeros([1], &device);
+    let mut critic_loss = Tensor::zeros([1], &device);
     for t in 0..horizon {
-        let idx_t = Tensor::<B, 1, Int>::from_ints([(t as i64)], device);
-
-        // Recompute action distribution from actor
         let (mean, log_std) = actor.forward(&imag_states[t]);
-        let action = imag_actions[t].clone(); // stored action from rollout
-        let std = log_std.exp().add_scalar(1e-4);
+        let log_prob = tanh_gaussian_log_prob(mean, log_std.clone(), imag_raw_actions[t].clone());
 
-        // Compute log_prob of the stored action under current policy
-        let var = std.clone().mul(std.clone());
-        let diff = action.clone() - mean;
-        let term1 = diff.clone().mul(diff.clone()) / var.add_scalar(1e-8);
-        let term2 = std.mul_scalar(2.0).log();
-        let sum = (term1 + term2).add_scalar(1.837877f64);
-        let mut log_prob: Tensor<B, 1> = sum.sum_dim(1).mul_scalar(-0.5).squeeze(1); // [B]
+        let adv = (returns[t].clone() - values_detached[t].clone()).detach();
+        // Gaussian entropy up to constants: sum(log_std); enough for a bonus gradient.
+        let entropy: Tensor<B, 1> = log_std.sum_dim(1).squeeze(1);
+        actor_loss = actor_loss
+            + log_prob.neg().mul(adv).mean().reshape([1])
+            - entropy.mean().mul_scalar(entropy_coef).reshape([1]);
 
-        // tanh correction for bounded actions
-        let action_tanh = action.tanh();
-        let tanh_grad = action_tanh.clone().mul(action_tanh.clone()).neg().add_scalar(1.0);
-        log_prob = log_prob - tanh_grad.clamp_min(1e-8).log().sum_dim(1).squeeze(1); // [B]
-
-        let logp = log_prob.unsqueeze_dim::<2>(1); // [B, 1]
-        let adv = advantages.clone().select(1, idx_t); // [B, 1]
-
-        actor_loss = actor_loss + logp.neg().mul(adv).mean().reshape([1]);
+        let vd = returns[t].clone().detach() - values[t].clone();
+        critic_loss = critic_loss + vd.clone().mul(vd).mean().reshape([1]);
     }
-    actor_loss = actor_loss.div_scalar(horizon as f64);
-
-    // Critic loss: MSE between returns and values
-    let value_loss = { let d = returns - values_tensor; d.clone().mul(d) }.mean().reshape([1]);
-
-    (actor_loss, value_loss)
+    (
+        actor_loss.div_scalar(horizon as f64),
+        critic_loss.div_scalar(horizon as f64),
+    )
 }

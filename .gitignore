@@ -2,3 +2,5 @@
 checkpoints/
 frames/
 output/
+logs/
+*.mp4

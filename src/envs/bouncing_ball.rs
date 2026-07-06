@@ -224,6 +224,11 @@ impl BouncingBall {
         }
     }
 
+    /// True physical state (x, y, vx, vy) — diagnostics only.
+    pub fn state(&self) -> [f32; 4] {
+        [self.x, self.y, self.vx, self.vy]
+    }
+
     fn draw_line(&self, pixels: &mut [f32], x0: usize, y0: usize, x1: usize, y1: usize, size: usize, n: usize, color: [f32; 3]) {
         let dx = (x1 as i32 - x0 as i32).abs();
         let dy = (y1 as i32 - y0 as i32).abs();

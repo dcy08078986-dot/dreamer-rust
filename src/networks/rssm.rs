@@ -1,7 +1,7 @@
 use burn::module::Module;
 use burn::nn::gru::{Gru, GruConfig};
-use burn::nn::{Linear, LinearConfig};
-use burn::tensor::activation::softplus;
+use burn::nn::{LayerNorm, LayerNormConfig, Linear, LinearConfig};
+use burn::tensor::activation::{relu, softplus};
 use burn::tensor::{backend::Backend, Tensor, Distribution};
 
 /// =========================
@@ -15,6 +15,18 @@ pub struct RSSMState<B: Backend> {
     pub std: Tensor<B, 2>,   // q or p std
 }
 
+impl<B: Backend> RSSMState<B> {
+    /// Detached copy — cuts the autodiff graph (rollouts, collection).
+    pub fn detach(&self) -> Self {
+        Self {
+            deter: self.deter.clone().detach(),
+            stoch: self.stoch.clone().detach(),
+            mean: self.mean.clone().detach(),
+            std: self.std.clone().detach(),
+        }
+    }
+}
+
 /// =========================
 /// RSSM Model
 /// =========================
@@ -22,15 +34,25 @@ pub struct RSSMState<B: Backend> {
 pub struct RSSM<B: Backend> {
     pub gru: Gru<B>,
 
-    pub prior: Linear<B>,  // h -> (mean, std)
-    pub post: Linear<B>,   // (h, obs) -> (mean, std)
+    pub prior_h: Linear<B>, // h -> hidden
+    pub prior: Linear<B>,   // hidden -> (mean, std)
+    pub post_h: Linear<B>,  // (h, obs) -> hidden
+    pub post: Linear<B>,    // hidden -> (mean, std)
+
+    /// Normalizes the observation embedding entering the posterior. Without it,
+    /// unbounded embeddings produce large posterior means the prior cannot match,
+    /// inflating the KL by orders of magnitude early in training.
+    pub norm_obs: LayerNorm<B>,
 
     pub deter_size: usize,
     pub stoch_size: usize,
+    pub ctx_size: usize,   // extra context input to the GRU (0 = disabled)
 }
 
+const RSSM_HIDDEN: usize = 128;
+
 impl<B: Backend> RSSM<B> {
-    /// init
+    /// init (no interaction context)
     pub fn init(
         device: &B::Device,
         deter: usize,
@@ -38,22 +60,36 @@ impl<B: Backend> RSSM<B> {
         action: usize,
         obs: usize,
     ) -> Self {
+        Self::init_with_ctx(device, deter, stoch, action, obs, 0)
+    }
+
+    /// init with an extra context input to the transition GRU. Used by the
+    /// slot RSSM to feed cross-slot interaction features into each slot's dynamics.
+    pub fn init_with_ctx(
+        device: &B::Device,
+        deter: usize,
+        stoch: usize,
+        action: usize,
+        obs: usize,
+        ctx: usize,
+    ) -> Self {
         Self {
             gru: GruConfig::new(
-                stoch + action,
+                stoch + action + ctx,
                 deter,
                 true,
             )
             .init(device),
 
-            prior: LinearConfig::new(deter, stoch * 2)
-                .init(device),
-
-            post: LinearConfig::new(deter + obs, stoch * 2)
-                .init(device),
+            prior_h: LinearConfig::new(deter, RSSM_HIDDEN).init(device),
+            prior: LinearConfig::new(RSSM_HIDDEN, stoch * 2).init(device),
+            post_h: LinearConfig::new(deter + obs, RSSM_HIDDEN).init(device),
+            post: LinearConfig::new(RSSM_HIDDEN, stoch * 2).init(device),
+            norm_obs: LayerNormConfig::new(obs).init(device),
 
             deter_size: deter,
             stoch_size: stoch,
+            ctx_size: ctx,
         }
     }
 
@@ -78,12 +114,18 @@ impl<B: Backend> RSSM<B> {
         &self,
         state: &RSSMState<B>,
         action: Tensor<B, 2>,
+        ctx: Option<Tensor<B, 2>>,
     ) -> Tensor<B, 2> {
-        // concatenate stoch and action, then add sequence dimension
-        let x = Tensor::cat(
-            vec![state.stoch.clone(), action],
-            1,
-        ).unsqueeze_dim(1); // [B, 1, F]
+        // concatenate stoch, action (and optional interaction context),
+        // then add sequence dimension
+        let mut parts = vec![state.stoch.clone(), action];
+        if self.ctx_size > 0 {
+            let c = ctx.unwrap_or_else(|| {
+                Tensor::zeros([state.stoch.dims()[0], self.ctx_size], &state.stoch.device())
+            });
+            parts.push(c);
+        }
+        let x = Tensor::cat(parts, 1).unsqueeze_dim(1); // [B, 1, F]
 
         // GRU forward: returns output tensor of shape [B, T, H]
         // Burn newer API: output only, no hidden tuple
@@ -103,7 +145,8 @@ impl<B: Backend> RSSM<B> {
         &self,
         deter: Tensor<B, 2>,
     ) -> (Tensor<B, 2>, Tensor<B, 2>) {
-        let stats = self.prior.forward(deter);
+        let h = relu(self.prior_h.forward(deter));
+        let stats = self.prior.forward(h);
         let chunks = stats.chunk(2, 1);
 
         let mean = chunks[0].clone();
@@ -121,9 +164,9 @@ impl<B: Backend> RSSM<B> {
         deter: Tensor<B, 2>,
         obs: Tensor<B, 2>,
     ) -> (Tensor<B, 2>, Tensor<B, 2>) {
-        let stats = self.post.forward(
-            Tensor::cat(vec![deter, obs], 1),
-        );
+        let obs_n = self.norm_obs.forward(obs);
+        let h = relu(self.post_h.forward(Tensor::cat(vec![deter, obs_n], 1)));
+        let stats = self.post.forward(h);
 
         let chunks = stats.chunk(2, 1);
 
@@ -160,7 +203,17 @@ impl<B: Backend> RSSM<B> {
         state: &RSSMState<B>,
         action: Tensor<B, 2>,
     ) -> Tensor<B, 2> {
-        self.gru_step(state, action)
+        self.gru_step(state, action, None)
+    }
+
+    /// Like get_deter, but with an explicit interaction context (slot RSSM).
+    pub fn get_deter_ctx(
+        &self,
+        state: &RSSMState<B>,
+        action: Tensor<B, 2>,
+        ctx: Tensor<B, 2>,
+    ) -> Tensor<B, 2> {
+        self.gru_step(state, action, Some(ctx))
     }
 
     /// =========================
