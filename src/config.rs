@@ -56,6 +56,8 @@ pub struct Config {
 
     // ── environment selection ──
     pub env_type: String,
+    pub object_world_num_balls: usize,  // balls in ObjectWorld
+    pub object_world_num_walls: usize,  // walls in ObjectWorld
 
     // ── loss weights ──
     pub free_nats: f32,
@@ -145,6 +147,8 @@ impl Default for Config {
             load_checkpoint: None,
 
             env_type: "bouncing_ball".to_string(),
+            object_world_num_balls: 3,
+            object_world_num_walls: 2,
 
             free_nats: 0.5,
             kl_scale: 0.8,

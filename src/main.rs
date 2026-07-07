@@ -10,9 +10,11 @@ mod agent;
 mod envs;
 mod video;
 mod diagnostics;
+mod eval_object;
 
 use burn::backend::{Autodiff, NdArray};
 use envs::bouncing_ball::BouncingBall;
+use envs::object_world::ObjectWorld;
 use envs::paddle_hitting::PaddleHitting;
 
 /// Env-var config overrides so ablations run without code edits, e.g.:
@@ -83,6 +85,22 @@ fn main() {
                 train::run::<Backend, BouncingBall>(device, config, &mut envs);
             }
         }
+        "object_world" => {
+            println!("Creating {} parallel ObjectWorld environments...", num_envs);
+            let mut envs: Vec<ObjectWorld> = (0..num_envs)
+                .map(|i| ObjectWorld::new(
+                    config.env_max_steps,
+                    config.action_dim,
+                    config.image_channels,
+                    config.image_size,
+                    config.seed + i as u64,
+                    config.object_world_num_balls,
+                    config.object_world_num_walls,
+                ))
+                .collect();
+            println!("Using Object-Centric World Model ({} slots)", config.num_slots);
+            train_oc::run_oc::<Backend, ObjectWorld>(device, config, &mut envs);
+        }
         "paddle_hitting" => {
             println!("Creating {} parallel PaddleHitting environments...", num_envs);
             let mut envs: Vec<PaddleHitting> = (0..num_envs)
@@ -102,7 +120,7 @@ fn main() {
             }
         }
         _ => {
-            panic!("Unknown environment type: {}. Use 'bouncing_ball' or 'paddle_hitting'", config.env_type);
+            panic!("Unknown environment type: {}. Use 'bouncing_ball', 'object_world', or 'paddle_hitting'", config.env_type);
         }
     }
 }
