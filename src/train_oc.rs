@@ -1,4 +1,5 @@
 use burn::module::Module;
+use burn::record::{FullPrecisionSettings, NamedMpkFileRecorder};
 use burn::tensor::{backend::Backend, Tensor};
 use burn::tensor::backend::AutodiffBackend;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
@@ -138,6 +139,21 @@ pub fn run_oc<B: AutodiffBackend, E: Environment>(device: B::Device, config: Con
         println!("round {:4} | ep {:4} | avg_reward {:+.4} | model {:.4} (obs:{:.4} ball:{:.4} rew:{:.4} kl:{:.4} std:{:.3}) | actor {:.4} | critic {:.4} | slot_kl:[{:.2}, {:.2}, {:.2}]{}",
             round, last_ep, avg_reward, model_loss_val, obs_loss_val, motion_mse_val, rew_loss_val, kl_loss_val, post_std_val, actor_loss_val, critic_loss_val,
             slot_kl_vals.get(0).unwrap_or(&0.0), slot_kl_vals.get(1).unwrap_or(&0.0), slot_kl_vals.get(2).unwrap_or(&0.0), warmup_tag);
+
+        // ── Checkpoint ──
+        if ep_counter > 100 && last_ep % 50 == 0 {
+            let rec = NamedMpkFileRecorder::<FullPrecisionSettings>::default();
+            let _ = std::fs::create_dir_all(&config.checkpoint_dir);
+            wm.clone().save_file(format!("{}/oc_wm_ep_{}", config.checkpoint_dir, last_ep), &rec).ok();
+            actor.clone().save_file(format!("{}/oc_actor_ep_{}", config.checkpoint_dir, last_ep), &rec).ok();
+            critic.clone().save_file(format!("{}/oc_critic_ep_{}", config.checkpoint_dir, last_ep), &rec).ok();
+            println!("Checkpoint saved at episode {}", last_ep);
+        }
+
+        // ── Video ──
+        if config.video_interval > 0 && (round == 0 || last_ep % config.video_interval == 0 || ep_counter >= total_eps) {
+            generate_oc_video::<B>(&wm, reference_ep.as_ref(), last_ep, c, h, w);
+        }
     }
     println!("=== Done ===");
 }
