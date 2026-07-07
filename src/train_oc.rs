@@ -178,7 +178,9 @@ fn generate_oc_video<B: Backend>(wm: &OCWorldModel<B>, ref_ep: Option<&Episode<B
     let zero_action = Tensor::zeros([1, ep.action[0].dims()[1]], &device);
     let mut states = wm.obs_step(&wm.init_state(1, &device), ep.obs[0].clone(), zero_action).detach();
     for t in 0..seq_len {
-        if t > 0 { states = wm.img_step(&states, ep.action[t-1].clone()).detach(); }
+        // Use obs_step (real observation) for reconstruction quality video.
+        // img_step would show imagination rollouts instead.
+        if t > 0 { states = wm.obs_step(&states, ep.obs[t].clone(), ep.action[t-1].clone()).detach(); }
         let (recon, _, _) = wm.decode_slots(&states);
         let recon_img = recon.reshape([c, h, w]);
         let real = ep.obs[t].clone().reshape([c, h, w]);
