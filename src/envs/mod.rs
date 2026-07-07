@@ -2,6 +2,7 @@ use burn::tensor::{backend::Backend, Tensor};
 
 pub mod bouncing_ball;
 pub mod object_world;
+pub mod object3d_world;
 pub mod paddle_hitting;
 
 pub trait Environment {

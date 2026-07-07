@@ -264,10 +264,12 @@ impl ObjectWorld {
     fn to_tensor<B: Backend>(&self) -> Tensor<B, 3> {
         let img=self.render(); let s=self.image_size;
         let mut d=Vec::with_capacity(3*s*s);
-        for y in 0..s { for x in 0..s {
-            let p=img.get_pixel(x as u32,y as u32);
-            d.push(p[0]as f32/255.0); d.push(p[1]as f32/255.0); d.push(p[2]as f32/255.0);
-        }}
+        // NCHW planar: all R first, then all G, then all B
+        for c in 0..3 {
+            for y in 0..s { for x in 0..s {
+                d.push(img.get_pixel(x as u32,y as u32)[c] as f32/255.0);
+            }}
+        }
         Tensor::<B,1>::from_floats(d.as_slice(),&Default::default()).reshape([3,s,s])
     }
 }

@@ -15,6 +15,7 @@ mod eval_object;
 use burn::backend::{Autodiff, NdArray};
 use envs::bouncing_ball::BouncingBall;
 use envs::object_world::ObjectWorld;
+use envs::object3d_world::Object3DWorld;
 use envs::paddle_hitting::PaddleHitting;
 
 /// Env-var config overrides so ablations run without code edits, e.g.:
@@ -89,17 +90,25 @@ fn main() {
             println!("Creating {} parallel ObjectWorld environments...", num_envs);
             let mut envs: Vec<ObjectWorld> = (0..num_envs)
                 .map(|i| ObjectWorld::new(
-                    config.env_max_steps,
-                    config.action_dim,
-                    config.image_channels,
-                    config.image_size,
-                    config.seed + i as u64,
-                    config.object_world_num_balls,
-                    config.object_world_num_walls,
+                    config.env_max_steps, config.action_dim, config.image_channels,
+                    config.image_size, config.seed + i as u64,
+                    config.object_world_num_balls, config.object_world_num_walls,
                 ))
                 .collect();
             println!("Using Object-Centric World Model ({} slots)", config.num_slots);
             train_oc::run_oc::<Backend, ObjectWorld>(device, config, &mut envs);
+        }
+        "object3d" => {
+            println!("Creating {} parallel Object3DWorld environments (128x128)...", num_envs);
+            let mut envs: Vec<Object3DWorld> = (0..num_envs)
+                .map(|i| Object3DWorld::new(
+                    config.env_max_steps, config.action_dim, config.image_channels,
+                    config.image_size, config.seed + i as u64,
+                    config.object3d_num_objects,
+                ))
+                .collect();
+            println!("Using Object-Centric World Model ({} slots)", config.num_slots);
+            train_oc::run_oc::<Backend, Object3DWorld>(device, config, &mut envs);
         }
         "paddle_hitting" => {
             println!("Creating {} parallel PaddleHitting environments...", num_envs);
@@ -120,7 +129,7 @@ fn main() {
             }
         }
         _ => {
-            panic!("Unknown environment type: {}. Use 'bouncing_ball', 'object_world', or 'paddle_hitting'", config.env_type);
+            panic!("Unknown environment type: {}. Use 'bouncing_ball', 'object_world', 'object3d', or 'paddle_hitting'", config.env_type);
         }
     }
 }
