@@ -139,7 +139,7 @@ fn render(objects:&[Obj3D], size:usize)->image::RgbImage{
     let cam=V3(45.0,75.0,55.0); let look=V3(50.0,30.0,50.0);
     let up=V3(0.0,1.0,0.0); let fwd=(look-cam).norm();
     let r=fwd.cross(&up).norm(); let uc=r.cross(&fwd).norm();
-    let sc=s as f32/70.0;
+    let sc=s as f32/55.0;
     let mut img=image::RgbImage::new(s,s);
     for y in 0..s{for x in 0..s{img.put_pixel(x,y,image::Rgb([225,225,228]));}}
     // ground grid
@@ -160,7 +160,7 @@ fn render(objects:&[Obj3D], size:usize)->image::RgbImage{
         let o=&objects[idx]; if o.kind==ObjKind::Ground{continue;}
         let(px,py,_)=proj(&cam,&r,&uc,&fwd,&o.pos);
         let sx=(hf+px*sc)as i32; let sy=(hf-py*sc)as i32;
-        let rp=(o.radius*sc).max(6.0)as i32;
+        let rp=(o.radius*sc).max(10.0)as i32;
         let sh=(-ld.1).max(0.4).min(1.0);
         for dy in -rp..=rp{for dx in -rp..=rp{
             if dx*dx+dy*dy>rp*rp{continue;}
@@ -195,13 +195,13 @@ pub fn render_mask(objects:&[Obj3D], tid:usize, size:usize)->image::GrayImage{
     let cam=V3(45.0,75.0,55.0); let look=V3(50.0,30.0,50.0);
     let up=V3(0.0,1.0,0.0); let fwd=(look-cam).norm();
     let r=fwd.cross(&up).norm(); let uc=r.cross(&fwd).norm();
-    let sc=s as f32/70.0;
+    let sc=s as f32/55.0;
     let mut mask=image::GrayImage::new(s,s);
     for o in objects{
         if o.id!=tid||o.kind==ObjKind::Ground{continue;}
         let(px,py,_)=proj(&cam,&r,&uc,&fwd,&o.pos);
         let sx=(hf+px*sc)as i32; let sy=(hf-py*sc)as i32;
-        let rp=(o.radius*sc).max(6.0)as i32;
+        let rp=(o.radius*sc).max(10.0)as i32;
         for dy in -rp..=rp{for dx in -rp..=rp{
             if dx*dx+dy*dy>rp*rp{continue;}
             let ix=sx+dx; let iy=sy+dy;
@@ -256,7 +256,7 @@ impl Object3DWorld {
         }
         objs.push(Obj3D{id:nid(),kind:ObjKind::Target,pos:V3(target_x,85.,target_z),vel:V3(0.,0.,0.),radius:4.,mass:1e9,color:[50,220,80],is_dynamic:false,is_agent:false,half:V3(0.,0.,0.)});
         objs.push(Obj3D{id:nid(),kind:ObjKind::Cube,pos:V3(cube_x,5.,cube_z),vel:V3(0.,0.,0.),radius:6.,mass:1e5,color:[180,130,60],is_dynamic:false,is_agent:false,half:V3(5.,5.,5.)});
-        objs.push(Obj3D{id:nid(),kind:ObjKind::Agent,pos:V3(agent_x,agent_y,50.),vel:V3(0.,0.,0.),radius:4.,mass:10.,color:[60,200,220],is_dynamic:true,is_agent:true,half:V3(0.,0.,0.)});
+        objs.push(Obj3D{id:nid(),kind:ObjKind::Agent,pos:V3(agent_x,agent_y,50.),vel:V3(0.,0.,0.),radius:5.,mass:10.,color:[60,200,220],is_dynamic:true,is_agent:true,half:V3(0.,0.,0.)});
         let bc=[[255,80,80],[80,150,255],[255,200,40]];
         for i in 0..3 {
             let (pos, vel, r) = &ball_data[i];
